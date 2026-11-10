@@ -1,0 +1,137 @@
+package mirror
+
+import (
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func TestParseRegion(t *testing.T) {
+	cases := []struct {
+		in         string
+		x, y, w, h int
+		wantErr    bool
+	}{
+		{"100,50,800,600", 100, 50, 800, 600, false},
+		{"0,0,1920,1080", 0, 0, 1920, 1080, false},
+		{"100,50", 0, 0, 0, 0, true},
+		{"a,b,c,d", 0, 0, 0, 0, true},
+		{"0,0,0,600", 0, 0, 0, 0, true},
+		{"0,0,800,-5", 0, 0, 0, 0, true},
+	}
+	for _, c := range cases {
+		x, y, w, h, err := ParseRegion(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseRegion(%q) 期望报错，得到 nil", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseRegion(%q) 意外报错: %v", c.in, err)
+			continue
+		}
+		if x != c.x || y != c.y || w != c.w || h != c.h {
+			t.Errorf("ParseRegion(%q) = %d,%d,%d,%d，期望 %d,%d,%d,%d", c.in, x, y, w, h, c.x, c.y, c.w, c.h)
+		}
+	}
+}
+
+func TestBuildArgsWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("仅验证 windows 分支")
+	}
+	cases := []struct {
+		name    string
+		opts    Options
+		wantSub []string // 参数序列中必须按序出现的片段
+		notWant []string // 不得出现的片段
+	}{
+		{
+			name: "medium 默认主屏 libx264",
+			opts: Options{Quality: QualityMedium, Encoder: "libx264"},
+			wantSub: []string{"-f", "gdigrab", "-framerate", "30", "-offset_x", "0", "-offset_y", "0", "-video_size", "1920x1080",
+				"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+				"-b:v", "4M", "-g", "60",
+				"-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "-1", "pipe:1"},
+			notWant: []string{"dshow", "-vf"},
+		},
+		{
+			name:    "low 带缩放",
+			opts:    Options{Quality: QualityLow, Encoder: "h264_qsv"},
+			wantSub: []string{"-framerate", "24", "-video_size", "1280x720", "-vf", "scale=1280:-2", "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "2M", "-g", "48"},
+		},
+		{
+			name:    "region 覆盖 display",
+			opts:    Options{Region: "100,50,800,600", Quality: QualityHigh, Encoder: "h264_qsv"},
+			wantSub: []string{"-offset_x", "100", "-offset_y", "50", "-video_size", "800x600"},
+			notWant: []string{"-vf"},
+		},
+		{
+			name:    "带音频",
+			opts:    Options{Quality: QualityMedium, Encoder: "libx264", AudioDev: "audio=virtual-audio-capturer"},
+			wantSub: []string{"-f", "dshow", "-i", "audio=virtual-audio-capturer", "-c:a", "aac", "-b:a", "128k"},
+		},
+		{
+			name:    "nvenc 参数",
+			opts:    Options{Quality: QualityMedium, Encoder: "h264_nvenc"},
+			wantSub: []string{"-c:v", "h264_nvenc", "-preset", "p1"},
+			notWant: []string{"-pix_fmt"},
+		},
+		{
+			name:    "amf 参数",
+			opts:    Options{Quality: QualityMedium, Encoder: "h264_amf"},
+			wantSub: []string{"-c:v", "h264_amf", "-quality", "speed"},
+		},
+	}
+	for _, c := range cases {
+		args, err := BuildArgs("ffmpeg", c.opts)
+		if err != nil {
+			t.Fatalf("%s: BuildArgs 报错: %v", c.name, err)
+		}
+		got := strings.Join(args, " ")
+		pos := 0
+		for _, seg := range c.wantSub {
+			i := strings.Index(got[pos:], seg)
+			if i < 0 {
+				t.Errorf("%s: 参数缺少片段 %q（按序），实际: %s", c.name, seg, got)
+				break
+			}
+			pos += i + len(seg)
+		}
+		for _, seg := range c.notWant {
+			if strings.Contains(got, seg) {
+				t.Errorf("%s: 参数不应包含 %q，实际: %s", c.name, seg, got)
+			}
+		}
+		if args[0] == "ffmpeg" {
+			t.Errorf("%s: 返回值不应包含程序名 ffmpeg", c.name)
+		}
+	}
+}
+
+func TestBuildArgsErrors(t *testing.T) {
+	if _, err := BuildArgs("ffmpeg", Options{Quality: QualityMedium}); err == nil {
+		t.Error("Encoder 为空应报错")
+	}
+	if _, err := BuildArgs("ffmpeg", Options{Quality: "ultra", Encoder: "libx264"}); err == nil {
+		t.Error("非法 quality 应报错")
+	}
+	if _, err := BuildArgs("ffmpeg", Options{Quality: QualityMedium, Encoder: "libx264", Region: "bad"}); err == nil {
+		t.Error("非法 region 应报错")
+	}
+}
+
+func TestBuildArgsHighNoScale(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("仅验证 windows 分支")
+	}
+	args, err := BuildArgs("ffmpeg", Options{Quality: QualityHigh, Encoder: "libx264"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(args, " ")
+	if strings.Contains(got, "-vf") {
+		t.Errorf("high 档不应有缩放参数: %s", got)
+	}
+}
