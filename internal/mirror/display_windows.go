@@ -22,7 +22,22 @@ var (
 	user32                  = syscall.NewLazyDLL("user32.dll")
 	procEnumDisplayMonitors = user32.NewProc("EnumDisplayMonitors")
 	procGetMonitorInfo      = user32.NewProc("GetMonitorInfoW")
+	procSetProcessDPIAware  = user32.NewProc("SetProcessDPIAware")
 )
+
+// init 声明 Per-Monitor DPI v2 感知，失败回落 system DPI aware。
+// 否则非 DPI-aware 进程拿到的是 DPI 虚拟化坐标（如 200% 缩放下 1440x900），
+// 而 gdigrab 按物理像素采集（2880x1800），采集区域会错成屏幕左上角。
+func init() {
+	if shcore := syscall.NewLazyDLL("shcore.dll"); shcore.Load() == nil {
+		if proc := shcore.NewProc("SetProcessDpiAwareness"); proc.Find() == nil {
+			// PROCESS_PER_MONITOR_DPI_AWARE = 2；已设置时返回 E_ACCESSDENIED，忽略
+			proc.Call(2)
+			return
+		}
+	}
+	procSetProcessDPIAware.Call()
+}
 
 // 完整 MONITORINFOEXW 布局：cbSize=136（x64），含 szDevice[32]uint16。
 type monitorInfoEx struct {
