@@ -319,6 +319,8 @@ func runMirrorCommand(rest []string, device string, timeout int, verbose bool, p
 		region  = fs.String("region", "", "只采集屏幕区域 x,y,w,h")
 		quality = fs.String("quality", "medium", "画质 low/medium/high")
 		noAudio = fs.Bool("no-audio", false, "不采集系统声音")
+		taskbar = fs.Bool("taskbar", false, "采集区域包含任务栏（默认排除）")
+		noFill  = fs.Bool("no-fill", false, "不裁切为 16:9（默认裁切铺满电视，画面不变形）")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "用法: dlnacast [全局 flags] mirror [flags]\n\nFlags:\n")
@@ -332,6 +334,8 @@ func runMirrorCommand(rest []string, device string, timeout int, verbose bool, p
 		Display: *display,
 		Region:  *region,
 		NoAudio: *noAudio,
+		Taskbar: *taskbar,
+		NoFill:  *noFill,
 	}
 	switch mirror.Quality(*quality) {
 	case mirror.QualityLow:

@@ -3,6 +3,7 @@ package mirror
 import (
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -42,13 +43,28 @@ func TestBuildArgsWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("仅验证 windows 分支")
 	}
-	// 非路径采集始终按显示器原生尺寸（不依赖开发机分辨率的写法：
-	// 先调 displaySize 拿实际值拼进断言）。
+	// 默认（裁切 16:9，不含任务栏）：工作区居中裁切 16:9。
+	// 用 displayWorkArea 实际值拼断言，不依赖开发机分辨率。
+	// taskbar 用例假定整屏也比 16:9 窄（本机 1440x900 即如此）——
+	// 若在超宽屏上跑，taskbar 用例的算式仍与实现一致（同款 16:9 裁切算式）。
+	wx, wy, ww, wh, err := displayWorkArea(0)
+	if err != nil {
+		t.Fatalf("displayWorkArea(0) 报错: %v", err)
+	}
+	cx, cy, cw, ch := wx, wy, ww, wh
+	if cw*9 > ch*16 {
+		cw = ch * 16 / 9
+		cx += (ww - cw) / 2
+	} else if cw*9 < ch*16 {
+		ch = cw * 9 / 16
+		cy += (wh - ch) / 2
+	}
+	defaultGeom := []string{"-offset_x", strconv.Itoa(cx), "-offset_y", strconv.Itoa(cy),
+		"-video_size", fmt.Sprintf("%dx%d", cw, ch)}
 	sw, sh, err := displaySize(0)
 	if err != nil {
 		t.Fatalf("displaySize(0) 报错: %v", err)
 	}
-	native := fmt.Sprintf("%dx%d", sw, sh)
 	cases := []struct {
 		name    string
 		opts    Options
@@ -56,19 +72,32 @@ func TestBuildArgsWindows(t *testing.T) {
 		notWant []string // 不得出现的片段
 	}{
 		{
-			name: "medium 默认主屏 libx264（原生采集+缩放 1920）",
+			name: "medium 默认主屏 libx264（工作区 16:9 裁切+缩放 1920）",
 			opts: Options{Quality: QualityMedium, Encoder: "libx264"},
-			wantSub: []string{"-f", "gdigrab", "-framerate", "30", "-offset_x", "0", "-offset_y", "0", "-video_size", native,
-				"-vf", "scale=1920:-2",
-				"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
-				"-b:v", "4M", "-g", "60",
-				"-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "-1", "pipe:1"},
+			wantSub: append([]string{"-f", "gdigrab", "-framerate", "30"}, append(defaultGeom,
+				[]string{"-vf", "scale=1920:-2",
+					"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+					"-b:v", "4M", "-g", "60",
+					"-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "-1", "pipe:1"}...)...),
 			notWant: []string{"dshow"},
 		},
 		{
-			name:    "low 带缩放（原生采集+缩放 1280）",
+			name:    "low 带缩放（工作区 16:9 裁切+缩放 1280）",
 			opts:    Options{Quality: QualityLow, Encoder: "h264_qsv"},
-			wantSub: []string{"-framerate", "24", "-video_size", native, "-vf", "scale=1280:-2", "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "2M", "-g", "48"},
+			wantSub: []string{"-framerate", "24", "-video_size", fmt.Sprintf("%dx%d", cw, ch), "-vf", "scale=1280:-2", "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "2M", "-g", "48"},
+		},
+		{
+			// taskbar=true 采集整屏（origin+size），默认仍裁切 16:9：
+			// 整屏比 16:9 窄 → 裁高度 sw*9/16，offset_y 居中
+			name:    "taskbar 包含任务栏（整屏后裁切）",
+			opts:    Options{Quality: QualityMedium, Encoder: "libx264", Taskbar: true},
+			wantSub: []string{"-offset_x", strconv.Itoa(wx), "-offset_y", strconv.Itoa(wy + (sh-sw*9/16)/2), "-video_size", fmt.Sprintf("%dx%d", sw, sw*9/16)},
+		},
+		{
+			// taskbar + no-fill：整屏原比例
+			name:    "taskbar + no-fill（整屏原比例）",
+			opts:    Options{Quality: QualityMedium, Encoder: "libx264", Taskbar: true, NoFill: true},
+			wantSub: []string{"-offset_x", strconv.Itoa(wx), "-offset_y", strconv.Itoa(wy), "-video_size", fmt.Sprintf("%dx%d", sw, sh)},
 		},
 		{
 			name:    "region 覆盖 display",

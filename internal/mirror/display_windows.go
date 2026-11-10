@@ -15,6 +15,7 @@ type rect struct {
 type monitorInfo struct {
 	index int
 	r     rect
+	work  rect
 }
 
 var (
@@ -40,7 +41,7 @@ func listMonitors() ([]monitorInfo, error) {
 		if ret == 0 {
 			return 1
 		}
-		monitors = append(monitors, monitorInfo{index: len(monitors), r: mi.rcMonitor})
+		monitors = append(monitors, monitorInfo{index: len(monitors), r: mi.rcMonitor, work: mi.rcWork})
 		return 1
 	})
 	ret, _, err := procEnumDisplayMonitors.Call(0, 0, cb, 0)
@@ -76,4 +77,17 @@ func displaySize(n int) (int, int, error) {
 	}
 	r := monitors[n].r
 	return int(r.Right - r.Left), int(r.Bottom - r.Top), nil
+}
+
+// displayWorkArea 返回第 n 个显示器的工作区（不含任务栏）原点与尺寸。
+func displayWorkArea(n int) (x, y, w, h int, err error) {
+	monitors, err := listMonitors()
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if n < 0 || n >= len(monitors) {
+		return 0, 0, 0, 0, fmt.Errorf("显示器编号 %d 超出范围（共 %d 个）", n, len(monitors))
+	}
+	r := monitors[n].work
+	return int(r.Left), int(r.Top), int(r.Right - r.Left), int(r.Bottom - r.Top), nil
 }
