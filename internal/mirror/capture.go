@@ -2,6 +2,7 @@
 package mirror
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +33,9 @@ func Start(ff string, args []string) (*Capture, error) {
 	c := &Capture{ff: ff, args: args, done: make(chan struct{})}
 	c.pipeR, c.pipeW = io.Pipe()
 	if err := c.launch(); err != nil {
+		c.mu.Lock()
+		c.err = fmt.Errorf("启动 ffmpeg 失败: %w", err)
+		c.mu.Unlock()
 		c.pipeW.Close()
 		c.pipeR.Close()
 		close(c.done)
@@ -122,6 +126,7 @@ func (c *Capture) finish() {
 }
 
 // Stop 终止子进程并关闭管道。Done 不关闭，Err() 保持 nil。
+// 幂等：重复调用或采集已永久失败（finish 后）也返回 nil。
 func (c *Capture) Stop() error {
 	c.mu.Lock()
 	c.stopped = true
@@ -130,5 +135,8 @@ func (c *Capture) Stop() error {
 	if cmd != nil && cmd.Process != nil {
 		cmd.Process.Kill()
 	}
-	return c.pipeW.Close()
+	if err := c.pipeW.Close(); err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
+	return nil
 }

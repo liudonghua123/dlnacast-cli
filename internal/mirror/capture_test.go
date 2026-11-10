@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -15,7 +16,7 @@ import (
 // fakecapture 行为（环境变量控制）：
 //
 //	FAKE_STREAM=ok     向 stdout 持续写 "LIVE"（每 20ms 一次），直到被 kill
-//	FAKE_STREAM=crash  写 5 次 "BAD" 后 exit 1；若 FAKE_RESTART=1 则重启后行为同 ok
+//	FAKE_STREAM=crash  写 5 次 "BAD" 后 exit 1
 //	                     （重启由被测的 capture.go 负责，fake 自身 crash 后不再写）
 //	FAKE_STREAM=die    写 5 次 "BAD" 后 exit 1（每次都失败）
 func buildFakeCap(t *testing.T) string {
@@ -34,6 +35,7 @@ func buildFakeCap(t *testing.T) string {
 
 func readAllTimeout(t *testing.T, r io.Reader, dur time.Duration) []byte {
 	t.Helper()
+	var mu sync.Mutex // 保护 buf：超时返回后读 goroutine 可能仍在写
 	var buf bytes.Buffer
 	done := make(chan struct{})
 	go func() {
@@ -41,7 +43,9 @@ func readAllTimeout(t *testing.T, r io.Reader, dur time.Duration) []byte {
 		tmp := make([]byte, 256)
 		for {
 			n, err := r.Read(tmp)
+			mu.Lock()
 			buf.Write(tmp[:n])
+			mu.Unlock()
 			if err != nil {
 				return
 			}
@@ -51,7 +55,11 @@ func readAllTimeout(t *testing.T, r io.Reader, dur time.Duration) []byte {
 	case <-done: // EOF，正常返回
 	case <-time.After(dur): // 超时：返回已读到的数据（流仍在继续）
 	}
-	return buf.Bytes()
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
 }
 
 func TestCaptureRunsAndStops(t *testing.T) {
