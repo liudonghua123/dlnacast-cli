@@ -56,7 +56,7 @@ func main() {
 	var (
 		flagDevice  = flag.String("d", "", "指定设备名称（子串匹配）或 IP")
 		flagTitle   = flag.String("t", "", "媒体标题")
-		flagSub     = flag.String("s", "", "字幕文件（srt）")
+		flagSub     = flag.String("s", "", "字幕文件（srt），多个用逗号分隔与媒体一一对应")
 		flagSeek    = flag.Int("seek", 0, "起始播放位置（秒）")
 		flagVol     = flag.Int("vol", -1, "初始音量（0-100）")
 		flagPort    = flag.Int("port", 0, "本地 HTTP 服务端口（默认随机）")
@@ -97,17 +97,44 @@ func main() {
 		if *flagTitle != "" {
 			f.Title = *flagTitle
 		}
-		if *flagSub != "" {
-			if _, err := os.Stat(*flagSub); err != nil {
-				fmt.Fprintf(os.Stderr, "错误: 字幕文件不存在: %s\n", *flagSub)
-				os.Exit(1)
-			}
-			f.SubPath = *flagSub
-		}
 		files = append(files, f)
 	}
 
+	if *flagSub != "" {
+		if err := applySubtitles(files, *flagSub); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	runCast(files, *flagDevice, *flagSeek, *flagVol, *flagPort, *flagTimeout, *flagVerbose)
+}
+
+// applySubtitles 把 -s 字幕列表按逗号拆分后映射到媒体列表：
+// 1 个字幕应用到第一个视频文件；多个字幕必须与媒体数量一致，按索引一一对应。
+func applySubtitles(files []*server.File, subFlag string) error {
+	subs := strings.Split(subFlag, ",")
+	for _, sub := range subs {
+		if _, err := os.Stat(sub); err != nil {
+			return fmt.Errorf("字幕文件不存在: %s", sub)
+		}
+	}
+	if len(subs) == 1 {
+		for _, f := range files {
+			if f.Type == "video" {
+				f.SubPath = subs[0]
+				return nil
+			}
+		}
+		return fmt.Errorf("字幕数量与媒体数量不一致")
+	}
+	if len(subs) != len(files) {
+		return fmt.Errorf("字幕数量与媒体数量不一致")
+	}
+	for i, f := range files {
+		f.SubPath = subs[i]
+	}
+	return nil
 }
 
 func runList(timeout int) {

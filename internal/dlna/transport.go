@@ -42,9 +42,9 @@ func upnpClass(mediaType string) string {
 func (t *Transport) Load(mediaURL, title, mediaType, subtitleURL string) error {
 	extraRes := ""
 	if subtitleURL != "" {
-		extraRes = fmt.Sprintf(`<res protocolInfo="http-get:*:text/vtt:*">%s</res>`, subtitleURL)
+		extraRes = fmt.Sprintf(`<res protocolInfo="http-get:*:text/vtt:*">%s</res>`, xmlEscape(subtitleURL))
 	}
-	didl := fmt.Sprintf(didlTemplate, title, upnpClass(mediaType), mediaURL, extraRes)
+	didl := fmt.Sprintf(didlTemplate, xmlEscape(title), upnpClass(mediaType), xmlEscape(mediaURL), extraRes)
 
 	_, err := t.call("SetAVTransportURI", map[string]string{
 		"InstanceID":         "0",

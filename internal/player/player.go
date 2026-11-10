@@ -31,10 +31,10 @@ func NewSession(dev *dlna.Device, files []*server.File, port int) (*Session, err
 
 	if hasLocal {
 		s.srv = server.NewServer(port)
+		s.srv.SetFiles(files)
 		if err := s.srv.Start(); err != nil {
 			return nil, fmt.Errorf("启动本地服务失败: %w", err)
 		}
-		s.srv.SetFiles(files)
 	}
 
 	ip, err := dlna.LocalIPFor(dev.Host)
