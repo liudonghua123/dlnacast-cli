@@ -47,6 +47,15 @@ func (s *Server) SetFiles(files []*File) {
 	s.mux = mux
 }
 
+// SetLiveHandler 注册 /live 直播端点（mirror 用）。须在 Start 前调用；
+// 与 SetFiles 互斥使用（mirror 会话没有媒体文件）。
+func (s *Server) SetLiveHandler(h http.Handler) {
+	if s.mux == nil {
+		s.mux = http.NewServeMux()
+	}
+	s.mux.Handle("/live", h)
+}
+
 func (s *Server) Handler() http.Handler {
 	if s.mux == nil {
 		return http.NewServeMux()

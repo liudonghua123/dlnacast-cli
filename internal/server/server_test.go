@@ -3,6 +3,8 @@ package server
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -100,3 +102,27 @@ func TestMediaURL(t *testing.T) {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+func TestSetLiveHandler(t *testing.T) {
+	s := NewServer(0)
+	s.SetLiveHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Write([]byte("LIVEBYTES"))
+	}))
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/live", s.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "LIVEBYTES" {
+		t.Errorf("body = %q", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "video/mp2t" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+}
