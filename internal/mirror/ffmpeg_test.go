@@ -120,6 +120,9 @@ func TestBuildArgsErrors(t *testing.T) {
 	if _, err := BuildArgs("ffmpeg", Options{Quality: QualityMedium, Encoder: "libx264", Region: "bad"}); err == nil {
 		t.Error("非法 region 应报错")
 	}
+	if _, err := BuildArgs("ffmpeg", Options{Quality: QualityMedium, Encoder: "h264_unknown"}); err == nil {
+		t.Error("未知编码器应报错")
+	}
 }
 
 func TestBuildArgsHighNoScale(t *testing.T) {

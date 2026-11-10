@@ -150,6 +150,9 @@ func BuildArgs(ff string, opts Options) ([]string, error) {
 	}
 
 	// 编码
+	if encoderArgs(opts.Encoder) == nil {
+		return nil, fmt.Errorf("未知编码器: %q（需 ProbeEncoder 结果或 h264_nvenc/h264_qsv/h264_amf/libx264 之一）", opts.Encoder)
+	}
 	args = append(args, "-c:v", opts.Encoder)
 	args = append(args, encoderArgs(opts.Encoder)...)
 	args = append(args, "-b:v", p.bitrate, "-g", strconv.Itoa(p.gop))
@@ -162,6 +165,40 @@ func BuildArgs(ff string, opts Options) ([]string, error) {
 	// 输出：低延迟 MPEG-TS 到 stdout
 	args = append(args, "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "-1", "pipe:1")
 	return args, nil
+}
+
+// ProbeEncoder 真实试编码探测：每个候选编码器跑一次 0.5 秒 lavfi 编码，
+// 返回第一个 exit 0 的。实测结论：-encoders 列表不可靠（DLL 缺失只在运行时暴露）。
+func ProbeEncoder(ff string) (string, error) {
+	return ProbeEncoderWithFallback(ff, []string{"h264_nvenc", "h264_qsv", "h264_amf", "libx264"})
+}
+
+// ProbeEncoderWithFallback 按给定链试编码（可测试注入链）。
+// 测试通过 FAKE_OK 环境变量控制假 ffmpeg 的成功项（环境继承见 probe_test.go）。
+func ProbeEncoderWithFallback(ff string, chain []string) (string, error) {
+	for _, enc := range chain {
+		cmd := exec.Command(ff,
+			"-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=30", "-t", "0.5",
+			"-c:v", enc, "-f", "mpegts", "-")
+		if err := cmd.Run(); err == nil {
+			return enc, nil
+		}
+	}
+	return "", fmt.Errorf("没有可用的 H.264 编码器（已尝试: %s）", strings.Join(chain, " → "))
+}
+
+// ProbeAudioDevice 探测 Windows dshow 虚拟音频设备（系统声音采集）。
+// 非 Windows 或未找到时返回 false，调用方降级为纯视频。
+func ProbeAudioDevice(ff string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	out, _ := exec.Command(ff, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy").CombinedOutput()
+	if strings.Contains(string(out), "virtual-audio-capturer") {
+		return "audio=virtual-audio-capturer", true
+	}
+	return "", false
 }
 
 // FindFFmpeg 在 PATH 与常见安装位置查找 ffmpeg。
