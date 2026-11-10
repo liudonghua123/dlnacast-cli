@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"dlnacast-cli/internal/dlna"
+	"dlnacast-cli/internal/mirror"
 	"dlnacast-cli/internal/player"
 	"dlnacast-cli/internal/server"
 	"dlnacast-cli/internal/ssdp"
@@ -64,7 +65,7 @@ func main() {
 		flagVerbose = flag.Bool("v", false, "详细输出")
 	)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "用法:\n  dlnacast [flags] <media1> [media2 ...]\n  dlnacast ls\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "用法:\n  dlnacast [flags] <media1> [media2 ...]\n  dlnacast mirror [flags]\n  dlnacast ls\n\nFlags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -72,6 +73,10 @@ func main() {
 	args := flag.Args()
 	if len(args) >= 1 && args[0] == "ls" {
 		runList(*flagTimeout)
+		return
+	}
+	if len(args) >= 1 && args[0] == "mirror" {
+		runMirrorCommand(args[1:], *flagDevice, *flagTimeout, *flagVerbose, *flagPort)
 		return
 	}
 	if len(args) == 0 {
@@ -156,18 +161,16 @@ func runList(timeout int) {
 	}
 }
 
-func runCast(files []*server.File, device string, seekSec, vol, port, timeout int, verbose bool) {
-	fmt.Println("正在扫描 DLNA 设备...")
+// selectDevice 扫描并选择 DLNA 设备：name 非空时按 IP 或名称子串匹配，
+// 否则交互选择。找不到时返回错误。
+func selectDevice(name string, timeout int, verbose bool) (*dlna.Device, error) {
 	locs, err := ssdp.Discover(time.Duration(timeout) * time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "扫描失败: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("扫描失败: %w", err)
 	}
 	if len(locs) == 0 {
-		fmt.Fprintln(os.Stderr, "未发现 DLNA 设备，请确认电视与电脑在同一局域网")
-		os.Exit(1)
+		return nil, fmt.Errorf("未发现 DLNA 设备，请确认电视与电脑在同一局域网")
 	}
-
 	c := dlna.NewClient()
 	var devices []*dlna.Device
 	for _, loc := range locs {
@@ -181,29 +184,33 @@ func runCast(files []*server.File, device string, seekSec, vol, port, timeout in
 		devices = append(devices, dev)
 	}
 	if len(devices) == 0 {
-		fmt.Fprintln(os.Stderr, "未发现可用的 DLNA 设备")
-		os.Exit(1)
+		return nil, fmt.Errorf("未发现可用的 DLNA 设备")
 	}
-
-	// 设备选择
 	var dev *dlna.Device
-	if device != "" {
+	if name != "" {
 		for _, d := range devices {
-			if d.Host == device || strings.Contains(d.Name, device) {
+			if d.Host == name || strings.Contains(d.Name, name) {
 				dev = d
 				break
 			}
 		}
 		if dev == nil {
-			fmt.Fprintf(os.Stderr, "错误: 未找到设备 %q\n", device)
-			os.Exit(1)
+			return nil, fmt.Errorf("未找到设备 %q", name)
 		}
 	} else {
 		dev = ui.ChooseDevice(devices)
 		if dev == nil {
-			fmt.Println("已取消")
-			os.Exit(0)
+			return nil, fmt.Errorf("已取消")
 		}
+	}
+	return dev, nil
+}
+
+func runCast(files []*server.File, device string, seekSec, vol, port, timeout int, verbose bool) {
+	dev, err := selectDevice(device, timeout, verbose)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
 	}
 	fmt.Printf("投屏到: %s (%s)\n", dev.Name, dev.Host)
 
@@ -301,4 +308,191 @@ func runCast(files []*server.File, device string, seekSec, vol, port, timeout in
 		}
 	}
 	fmt.Println()
+}
+
+func runMirrorCommand(rest []string, device string, timeout int, verbose bool, port int) {
+	fs := flag.NewFlagSet("mirror", flag.ExitOnError)
+	var (
+		display = fs.Int("display", 0, "显示器编号（0 = 主屏）")
+		region  = fs.String("region", "", "只采集屏幕区域 x,y,w,h")
+		quality = fs.String("quality", "medium", "画质 low/medium/high")
+		noAudio = fs.Bool("no-audio", false, "不采集系统声音")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "用法: dlnacast [全局 flags] mirror [flags]\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(rest); err != nil {
+		os.Exit(1)
+	}
+
+	opts := mirror.Options{
+		Display: *display,
+		Region:  *region,
+		NoAudio: *noAudio,
+	}
+	switch mirror.Quality(*quality) {
+	case mirror.QualityLow:
+		opts.Quality = mirror.QualityLow
+	case mirror.QualityMedium:
+		opts.Quality = mirror.QualityMedium
+	case mirror.QualityHigh:
+		opts.Quality = mirror.QualityHigh
+	default:
+		fmt.Fprintf(os.Stderr, "错误: quality 必须是 low/medium/high\n")
+		os.Exit(1)
+	}
+
+	ff, err := mirror.FindFFmpeg()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	enc, err := mirror.ProbeEncoder(ff)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+	opts.Encoder = enc
+	if verbose {
+		fmt.Printf("编码器: %s\n", enc)
+	}
+
+	if !opts.NoAudio {
+		if audioDev, ok := mirror.ProbeAudioDevice(ff); ok {
+			opts.AudioDev = audioDev
+			if verbose {
+				fmt.Printf("音频设备: %s\n", audioDev)
+			}
+		} else {
+			fmt.Println("提示: 未找到系统声音采集设备，仅镜像画面")
+		}
+	}
+
+	if opts.Region != "" {
+		if _, _, _, _, err := mirror.ParseRegion(opts.Region); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	runMirror(opts, device, port, timeout, verbose)
+}
+
+func runMirror(opts mirror.Options, device string, port, timeout int, verbose bool) {
+	dev, err := selectDevice(device, timeout, verbose)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("投屏到: %s (%s)\n", dev.Name, dev.Host)
+
+	args, err := mirror.BuildArgs("ffmpeg", opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+	ff, _ := mirror.FindFFmpeg() // runMirrorCommand 已保证成功
+	if verbose {
+		fmt.Printf("ffmpeg 参数: %s %s\n", ff, strings.Join(args, " "))
+	}
+
+	cap, err := mirror.Start(ff, args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	srv := server.NewServer(port)
+	srv.SetLiveHandler(mirror.NewLiveHandler(cap.Stdout()))
+	if err := srv.Start(); err != nil {
+		cap.Stop()
+		fmt.Fprintf(os.Stderr, "启动本地服务失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	ip, err := dlna.LocalIPFor(dev.Host)
+	if err != nil {
+		cap.Stop()
+		srv.Close()
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+	liveURL := fmt.Sprintf("http://%s:%d/live", ip, srv.Port())
+	fmt.Printf("直播地址: %s\n", liveURL)
+
+	tr := dlna.NewTransport(dev, dlna.NewClient())
+	recast := func() {
+		if err := tr.Load(liveURL, "屏幕镜像", "video", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "\n投放失败: %v\n", err)
+		}
+	}
+	recast()
+
+	keys, cancelKeys, err := ui.Keys()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "提示: 无法进入交互模式，镜像中... (Ctrl+C 退出)")
+		select {}
+	}
+	defer cancelKeys()
+
+	fmt.Println("按 s 重新同步到实时画面，↑↓ 音量，q 退出")
+	start := time.Now()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	volume := -1
+	failCount := 0
+	quit := false
+	for !quit {
+		select {
+		case k, ok := <-keys:
+			if !ok {
+				quit = true
+				break
+			}
+			switch k {
+			case ui.KeyQuit:
+				quit = true
+			case ui.KeyS:
+				recast() // 重新投放，回到实时点
+			case ui.KeyUp:
+				if volume < 0 {
+					volume, _ = tr.Volume()
+				}
+				volume = min(volume+10, 100)
+				tr.SetVolume(volume)
+			case ui.KeyDown:
+				if volume < 0 {
+					volume, _ = tr.Volume()
+				}
+				volume = max(volume-10, 0)
+				tr.SetVolume(volume)
+			}
+		case <-cap.Done():
+			fmt.Fprintf(os.Stderr, "\n采集失败: %v\n", cap.Err())
+			quit = true
+		case <-ticker.C:
+			elapsed := int(time.Since(start).Seconds())
+			_, _, playing, err := tr.Status()
+			if err != nil {
+				failCount++
+				if failCount >= 3 {
+					fmt.Fprintln(os.Stderr, "\n设备可能已断开连接")
+					quit = true
+					break
+				}
+				continue
+			}
+			failCount = 0
+			if volume < 0 {
+				volume, _ = tr.Volume()
+			}
+			ui.RenderProgress(os.Stdout, elapsed, 0, playing, volume, "屏幕镜像")
+		}
+	}
+	fmt.Println()
+	cap.Stop()
+	srv.Close()
+	tr.Stop()
 }
