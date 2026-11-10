@@ -9,8 +9,32 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            archive: zip
+          - goos: darwin
+            goarch: amd64
+            ext: ''
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            ext: ''
+            archive: tar.gz
+          - goos: linux
+            goarch: amd64
+            ext: ''
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            ext: ''
+            archive: tar.gz
     steps:
       - uses: actions/checkout@v4
 
@@ -18,31 +42,7 @@ jobs:
         with:
           go-version: '1.27'
 
-      - name: Build all platforms
-        strategy:
-          fail-fast: false
-          matrix:
-            include:
-              - goos: windows
-                goarch: amd64
-                ext: .exe
-                archive: zip
-              - goos: darwin
-                goarch: amd64
-                ext: ''
-                archive: tar.gz
-              - goos: darwin
-                goarch: arm64
-                ext: ''
-                archive: tar.gz
-              - goos: linux
-                goarch: amd64
-                ext: ''
-                archive: tar.gz
-              - goos: linux
-                goarch: arm64
-                ext: ''
-                archive: tar.gz
+      - name: Build
         run: |
           name="dlnacast-${{ matrix.goos }}-${{ matrix.goarch }}"
           mkdir -p dist
@@ -54,7 +54,29 @@ jobs:
           else
             tar czf "${name}.tar.gz" "${name}"
           fi
-          cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.zip
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-tgz-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Delete existing latest release
         run: |
