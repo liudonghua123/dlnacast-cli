@@ -68,6 +68,43 @@ DLNA 投屏命令行工具。把本地视频/图片/音频文件或 http(s) URL 
 -v              详细输出
 ```
 
+## 屏幕镜像
+
+把电脑屏幕实时镜像到电视（需要本机安装 [ffmpeg](https://ffmpeg.org/download.html) 并加入 PATH）：
+
+    dlnacast mirror
+
+指定显示器、区域或画质档：
+
+    # 第二个显示器
+    dlnacast -v mirror -display 1
+
+    # 屏幕区域 x,y,w,h
+    dlnacast mirror -region 100,50,1280,720
+
+    # 画质档：low（720p/2M）| medium（1080p/4M，默认）| high（原生分辨率/8M）
+    dlnacast mirror -quality low
+
+    # 只镜像画面（不采集系统声音）
+    dlnacast mirror -no-audio
+
+### 镜像参数
+
+```
+-display <n>     显示器编号（0 = 主屏，默认）
+-region x,y,w,h  只采集该区域（优先于 -display）
+-quality <p>     low / medium / high（默认 medium）
+-no-audio        不采集系统声音
+```
+
+全局参数（`-d`、`-timeout`、`-v`、`-port`）写在 `mirror` **之前**；镜像参数写在其后。
+
+镜像快捷键：`s` 重新同步到实时画面，`↑`/`↓` 音量，`q` 退出。
+
+### 延迟说明
+
+DLNA 是"推 URL 给电视播放器"模型，电视播放器固有的 1~3 秒缓冲无法从投屏端消除。投屏端管线（采集 → 硬件编码 → HTTP 推流）延迟低于 100ms，端到端延迟预计 **1~3 秒**，瓶颈在电视。系统声音需要虚拟音频采集设备（Windows 上如 `virtual-audio-capturer`）；没有时自动降级为只镜像画面。H.264 编码按 NVENC → QSV → AMF → libx264（ultrafast）顺序取第一个可用项。
+
 ## 快捷键
 
 投屏过程中（需要真实终端）：

@@ -68,6 +68,43 @@ Requires Go 1.27+:
 -v              Verbose output
 ```
 
+## Screen mirroring
+
+Mirror your computer screen to the TV in real time (requires [ffmpeg](https://ffmpeg.org/download.html) installed and on PATH):
+
+    dlnacast mirror
+
+Mirror a specific monitor, region, or quality tier:
+
+    # Second display
+    dlnacast -v mirror -display 1
+
+    # A screen region: x,y,w,h
+    dlnacast mirror -region 100,50,1280,720
+
+    # Quality: low (720p/2M) | medium (1080p/4M, default) | high (native/8M)
+    dlnacast mirror -quality low
+
+    # Video only (no system audio)
+    dlnacast mirror -no-audio
+
+### Mirror flags
+
+```
+-display <n>    Monitor index (0 = primary, default)
+-region x,y,w,h Capture only this region (overrides -display)
+-quality <p>    low / medium / high (default medium)
+-no-audio       Skip system audio capture
+```
+
+Global flags (`-d`, `-timeout`, `-v`, `-port`) go **before** the `mirror` keyword; mirror flags go after it.
+
+Mirror shortcuts: `s` re-syncs the TV to the live edge, `↑`/`↓` volume, `q` quit.
+
+### Latency
+
+DLNA pushes a URL to the TV's own player, whose 1–3 s buffer cannot be avoided from the caster side. The caster pipeline (capture → hardware encode → HTTP push) adds under 100 ms, so expect **1–3 s end-to-end latency** — the TV's player is the bottleneck. System audio requires a virtual audio capture device (e.g. `virtual-audio-capturer` on Windows); without one, mirroring falls back to video only automatically. H.264 encoding uses the first available of: NVENC → QSV → AMF → libx264 (ultrafast).
+
 ## Keyboard shortcuts
 
 While casting (requires a real terminal):
