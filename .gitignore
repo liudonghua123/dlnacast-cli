@@ -1,1 +1,4 @@
+dlnacast
 dlnacast.exe
+dist/
+*.exe

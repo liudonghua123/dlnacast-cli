@@ -123,9 +123,9 @@ func newTestSession(t *testing.T, files []*server.File) (*Session, *fakeRenderer
 	t.Cleanup(func() { srv.Close() })
 
 	dev := &dlna.Device{
-		Name:               "测试电视",
-		Host:               "127.0.0.1",
-		ControlURL:         srv.URL,
+		Name:                "测试电视",
+		Host:                "127.0.0.1",
+		ControlURL:          srv.URL,
 		RenderingControlURL: srv.URL,
 	}
 	s, err := NewSession(dev, files, 0)
