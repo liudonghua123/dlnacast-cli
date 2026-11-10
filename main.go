@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"dlnacast-cli/internal/dlna"
@@ -164,6 +165,7 @@ func runList(timeout int) {
 // selectDevice 扫描并选择 DLNA 设备：name 非空时按 IP 或名称子串匹配，
 // 否则交互选择。找不到时返回错误。
 func selectDevice(name string, timeout int, verbose bool) (*dlna.Device, error) {
+	fmt.Println("正在扫描 DLNA 设备...")
 	locs, err := ssdp.Discover(time.Duration(timeout) * time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("扫描失败: %w", err)
@@ -380,6 +382,120 @@ func runMirrorCommand(rest []string, device string, timeout int, verbose bool, p
 	runMirror(opts, device, port, timeout, verbose)
 }
 
+// mirrorSupervisor 管理采集子进程生命周期：
+// 首次采集在 grace 内永久失败且带音频时，去音频重试一次（规格承诺的
+// 运行时音频降级）；重试后再次失败或 grace 外失败，Done 关闭走正常退出路径。
+// Stop 后不再重试。源经 SwitchableReader 换绑，Fallback 事件通知调用方重新投放。
+type mirrorSupervisor struct {
+	mu       sync.Mutex
+	cap      *mirror.Capture
+	start    time.Time // 最近一次 launch 时间（grace 判定）
+	src      *mirror.SwitchableReader
+	fallback chan struct{} // 音频降级换源后关闭
+	fbOnce   sync.Once
+	done     chan struct{} // 采集永久失败后关闭
+	failOnce sync.Once
+	err      error
+	stopCh   chan struct{}
+	stopOnce sync.Once
+}
+
+// startSupervisedCapture 启动采集并开始监控。
+func startSupervisedCapture(ff string, opts mirror.Options, grace time.Duration) (*mirrorSupervisor, *mirror.SwitchableReader, error) {
+	s := &mirrorSupervisor{
+		fallback: make(chan struct{}),
+		done:     make(chan struct{}),
+		stopCh:   make(chan struct{}),
+	}
+	if err := s.launch(ff, opts); err != nil {
+		return nil, nil, err
+	}
+	s.src = mirror.NewSwitchableReader(s.current().Stdout())
+	go s.supervise(ff, opts, grace)
+	return s, s.src, nil
+}
+
+func (s *mirrorSupervisor) launch(ff string, opts mirror.Options) error {
+	args, err := mirror.BuildArgs(ff, opts)
+	if err != nil {
+		return err
+	}
+	c, err := mirror.Start(ff, args)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.cap = c
+	s.start = time.Now()
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *mirrorSupervisor) current() *mirror.Capture {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cap
+}
+
+// supervise 监控采集：grace 内永久失败且带音频 → 去音频重试一次；
+// 之后任何永久失败 → Done 关闭。
+func (s *mirrorSupervisor) supervise(ff string, opts mirror.Options, grace time.Duration) {
+	c := s.current()
+	select {
+	case <-s.stopCh:
+		return
+	case <-c.Done():
+	}
+	if c.Err() == nil {
+		return // Stop() 触发的结束
+	}
+	if opts.AudioDev == "" || time.Since(s.start) >= grace {
+		s.fail(c.Err())
+		return
+	}
+	// 去音频重试一次
+	noAudio := opts
+	noAudio.AudioDev = ""
+	if err := s.launch(ff, noAudio); err != nil {
+		fmt.Fprintf(os.Stderr, "\n音频降级重试失败: %v\n", err)
+		s.fail(c.Err())
+		return
+	}
+	c2 := s.current()
+	s.src.Switch(c2.Stdout())
+	fmt.Fprintln(os.Stderr, "\n音频启动失败，已去音频重试")
+	s.fbOnce.Do(func() { close(s.fallback) })
+	select {
+	case <-s.stopCh:
+	case <-c2.Done():
+		if c2.Err() != nil {
+			s.fail(c2.Err())
+		}
+	}
+}
+
+func (s *mirrorSupervisor) fail(err error) {
+	s.err = err
+	s.failOnce.Do(func() { close(s.done) })
+}
+
+// Done 采集永久失败后关闭（正常 Stop 不关闭）。
+func (s *mirrorSupervisor) Done() <-chan struct{} { return s.done }
+
+// Fallback 音频降级换源后关闭（调用方应重新投放）。
+func (s *mirrorSupervisor) Fallback() <-chan struct{} { return s.fallback }
+
+// Err 永久失败原因；未失败或正常 Stop 时为 nil。
+func (s *mirrorSupervisor) Err() error { return s.err }
+
+// Stop 终止当前采集并停止监控。幂等。
+func (s *mirrorSupervisor) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
+	if c := s.current(); c != nil {
+		c.Stop()
+	}
+}
+
 func runMirror(opts mirror.Options, device string, port, timeout int, verbose bool) {
 	dev, err := selectDevice(device, timeout, verbose)
 	if err != nil {
@@ -388,33 +504,24 @@ func runMirror(opts mirror.Options, device string, port, timeout int, verbose bo
 	}
 	fmt.Printf("投屏到: %s (%s)\n", dev.Name, dev.Host)
 
-	args, err := mirror.BuildArgs("ffmpeg", opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		os.Exit(1)
-	}
 	ff, _ := mirror.FindFFmpeg() // runMirrorCommand 已保证成功
-	if verbose {
-		fmt.Printf("ffmpeg 参数: %s %s\n", ff, strings.Join(args, " "))
-	}
-
-	cap, err := mirror.Start(ff, args)
+	sup, src, err := startSupervisedCapture(ff, opts, 5*time.Second)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		os.Exit(1)
 	}
 
 	srv := server.NewServer(port)
-	srv.SetLiveHandler(mirror.NewLiveHandler(cap.Stdout()))
+	srv.SetLiveHandler(mirror.NewLiveHandler(src))
 	if err := srv.Start(); err != nil {
-		cap.Stop()
+		sup.Stop()
 		fmt.Fprintf(os.Stderr, "启动本地服务失败: %v\n", err)
 		os.Exit(1)
 	}
 
 	ip, err := dlna.LocalIPFor(dev.Host)
 	if err != nil {
-		cap.Stop()
+		sup.Stop()
 		srv.Close()
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		os.Exit(1)
@@ -469,8 +576,10 @@ func runMirror(opts mirror.Options, device string, port, timeout int, verbose bo
 				volume = max(volume-10, 0)
 				tr.SetVolume(volume)
 			}
-		case <-cap.Done():
-			fmt.Fprintf(os.Stderr, "\n采集失败: %v\n", cap.Err())
+		case <-sup.Fallback():
+			recast() // 音频降级换源后重新投放
+		case <-sup.Done():
+			fmt.Fprintf(os.Stderr, "\n采集失败: %v\n", sup.Err())
 			quit = true
 		case <-ticker.C:
 			elapsed := int(time.Since(start).Seconds())
@@ -492,7 +601,7 @@ func runMirror(opts mirror.Options, device string, port, timeout int, verbose bo
 		}
 	}
 	fmt.Println()
-	cap.Stop()
+	sup.Stop()
 	srv.Close()
 	tr.Stop()
 }

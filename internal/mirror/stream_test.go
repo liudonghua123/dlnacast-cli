@@ -81,3 +81,61 @@ func TestLiveHandlerFlushesImmediately(t *testing.T) {
 		t.Error("应调用 Flush（零缓冲）")
 	}
 }
+
+func TestSwitchableReaderSwitch(t *testing.T) {
+	// 初始源读完（EOF）后 Switch 到新源，后续 Read 走新源
+	r1 := strings.NewReader("OLD")
+	r2 := strings.NewReader("NEW")
+	s := NewSwitchableReader(r1)
+
+	buf := make([]byte, 16)
+	n, _ := s.Read(buf)
+	if string(buf[:n]) != "OLD" {
+		t.Errorf("初始源读出 %q，期望 OLD", buf[:n])
+	}
+
+	s.Switch(r2)
+	// 消费 r1 剩余（EOF 前无数据）后读新源
+	buf = make([]byte, 16)
+	n, err := s.Read(buf)
+	if err == io.EOF && n == 0 {
+		// 旧源已耗尽：再来一次应是新源
+		n, err = s.Read(buf)
+	}
+	if err != nil {
+		t.Fatalf("换源后 Read 报错: %v", err)
+	}
+	if string(buf[:n]) != "NEW" {
+		t.Errorf("换源后读出 %q，期望 NEW", buf[:n])
+	}
+}
+
+func TestSwitchableReaderLiveHandlerSurvivesSwitch(t *testing.T) {
+	// 端到端：handler 持有 SwitchableReader，源 EOF 后换新源，客户端续收新数据
+	pr1, pw1 := io.Pipe()
+	pr2, pw2 := io.Pipe()
+	src := NewSwitchableReader(pr1)
+	h := NewLiveHandler(src)
+
+	done := make(chan string, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/live", nil))
+		done <- rec.Body.String()
+	}()
+
+	pw1.Write([]byte("FIRST-"))
+	pw1.Close() // 第一源结束
+	src.Switch(pr2)
+	pw2.Write([]byte("SECOND"))
+	pw2.Close() // 第二源结束 → handler 返回
+
+	select {
+	case body := <-done:
+		if body != "FIRST-SECOND" {
+			t.Errorf("响应体 = %q，期望 %q", body, "FIRST-SECOND")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler 未返回")
+	}
+}

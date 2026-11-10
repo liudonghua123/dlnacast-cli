@@ -18,18 +18,19 @@ const (
 )
 
 type preset struct {
-	w, h    int    // 采集分辨率；0,0 = 显示器原生分辨率（仅 high）
 	fps     int    //
 	bitrate string //
 	gop     int    //
-	scale   bool   // 是否追加 -vf scale 缩放
+	scaleW  int    // 输出缩放宽度；0 = 不缩放（采集始终为显示器原生尺寸）
 }
 
-// 画质预设精确值：low=1280x720/24fps/2M/GOP48；medium=1920x1080/30fps/4M/GOP60；
+// 画质预设精确值：low=输出 1280 宽/24fps/2M/GOP48；medium=输出 1920 宽/30fps/4M/GOP60；
 // high=源分辨率/30fps/8M/GOP60。
+// 采集始终按显示器原生尺寸（gdigrab -video_size 是采集区域，非输出缩放），
+// low/medium 再经 -vf scale=<w>:-2 缩放到预设宽度，避免在 2K/4K 屏上变成裁剪。
 var presets = map[Quality]preset{
-	QualityLow:    {w: 1280, h: 720, fps: 24, bitrate: "2M", gop: 48, scale: true},
-	QualityMedium: {w: 1920, h: 1080, fps: 30, bitrate: "4M", gop: 60},
+	QualityLow:    {fps: 24, bitrate: "2M", gop: 48, scaleW: 1280},
+	QualityMedium: {fps: 30, bitrate: "4M", gop: 60, scaleW: 1920},
 	QualityHigh:   {fps: 30, bitrate: "8M", gop: 60},
 }
 
@@ -114,13 +115,10 @@ func BuildArgs(ff string, opts Options) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			// low/medium 使用预设固定采集分辨率；high 使用显示器原生分辨率
-			w, h := p.w, p.h
-			if w == 0 || h == 0 {
-				w, h, err = displaySize(opts.Display)
-				if err != nil {
-					return nil, err
-				}
+			// 始终按显示器原生尺寸采集；low/medium 由 -vf 缩放到预设宽度
+			w, h, err := displaySize(opts.Display)
+			if err != nil {
+				return nil, err
 			}
 			args = append(args, "-offset_x", strconv.Itoa(x), "-offset_y", strconv.Itoa(y),
 				"-video_size", fmt.Sprintf("%dx%d", w, h))
@@ -144,9 +142,9 @@ func BuildArgs(ff string, opts Options) ([]string, error) {
 		}
 	}
 
-	// 缩放（在 -c:v 之前）
-	if p.scale {
-		args = append(args, "-vf", fmt.Sprintf("scale=%d:-2", p.w))
+	// 缩放（在 -c:v 之前）；region 路径用户明确指定区域，不缩放
+	if p.scaleW > 0 && opts.Region == "" {
+		args = append(args, "-vf", fmt.Sprintf("scale=%d:-2", p.scaleW))
 	}
 
 	// 编码

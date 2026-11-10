@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -41,6 +42,13 @@ func TestBuildArgsWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("仅验证 windows 分支")
 	}
+	// 非路径采集始终按显示器原生尺寸（不依赖开发机分辨率的写法：
+	// 先调 displaySize 拿实际值拼进断言）。
+	sw, sh, err := displaySize(0)
+	if err != nil {
+		t.Fatalf("displaySize(0) 报错: %v", err)
+	}
+	native := fmt.Sprintf("%dx%d", sw, sh)
 	cases := []struct {
 		name    string
 		opts    Options
@@ -48,18 +56,19 @@ func TestBuildArgsWindows(t *testing.T) {
 		notWant []string // 不得出现的片段
 	}{
 		{
-			name: "medium 默认主屏 libx264",
+			name: "medium 默认主屏 libx264（原生采集+缩放 1920）",
 			opts: Options{Quality: QualityMedium, Encoder: "libx264"},
-			wantSub: []string{"-f", "gdigrab", "-framerate", "30", "-offset_x", "0", "-offset_y", "0", "-video_size", "1920x1080",
+			wantSub: []string{"-f", "gdigrab", "-framerate", "30", "-offset_x", "0", "-offset_y", "0", "-video_size", native,
+				"-vf", "scale=1920:-2",
 				"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
 				"-b:v", "4M", "-g", "60",
 				"-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "-1", "pipe:1"},
-			notWant: []string{"dshow", "-vf"},
+			notWant: []string{"dshow"},
 		},
 		{
-			name:    "low 带缩放",
+			name:    "low 带缩放（原生采集+缩放 1280）",
 			opts:    Options{Quality: QualityLow, Encoder: "h264_qsv"},
-			wantSub: []string{"-framerate", "24", "-video_size", "1280x720", "-vf", "scale=1280:-2", "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "2M", "-g", "48"},
+			wantSub: []string{"-framerate", "24", "-video_size", native, "-vf", "scale=1280:-2", "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "2M", "-g", "48"},
 		},
 		{
 			name:    "region 覆盖 display",
