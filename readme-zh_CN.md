@@ -88,6 +88,10 @@ DLNA 投屏命令行工具。把本地视频/图片/音频文件或 http(s) URL 
     # 只镜像画面（不采集系统声音）
     dlnacast mirror -no-audio
 
+    # 裁切为 16:9 铺满电视（默认完整画面；默认不含任务栏）
+    dlnacast mirror -fill
+    dlnacast mirror -taskbar
+
 ### 镜像参数
 
 ```
@@ -95,6 +99,8 @@ DLNA 投屏命令行工具。把本地视频/图片/音频文件或 http(s) URL 
 -region x,y,w,h  只采集该区域（优先于 -display）
 -quality <p>     low / medium / high（默认 medium）
 -no-audio        不采集系统声音
+-taskbar         采集区域包含任务栏（默认排除）
+-fill            裁切为 16:9 铺满电视（默认完整画面，可能有细黑边）
 ```
 
 全局参数（`-d`、`-timeout`、`-v`、`-port`）写在 `mirror` **之前**；镜像参数写在其后。

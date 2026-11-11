@@ -88,6 +88,10 @@ Mirror a specific monitor, region, or quality tier:
     # Video only (no system audio)
     dlnacast mirror -no-audio
 
+    # Crop to 16:9 to fill the TV (default keeps the full screen; taskbar excluded by default)
+    dlnacast mirror -fill
+    dlnacast mirror -taskbar
+
 ### Mirror flags
 
 ```
@@ -95,6 +99,8 @@ Mirror a specific monitor, region, or quality tier:
 -region x,y,w,h Capture only this region (overrides -display)
 -quality <p>    low / medium / high (default medium)
 -no-audio       Skip system audio capture
+-taskbar        Include the taskbar in the capture (excluded by default)
+-fill           Crop to 16:9 to fill the TV (default: full screen, may have slim black bars)
 ```
 
 Global flags (`-d`, `-timeout`, `-v`, `-port`) go **before** the `mirror` keyword; mirror flags go after it.

@@ -39,9 +39,9 @@ type Options struct {
 	Display  int    // 显示器编号，0 = 主屏
 	Region   string // 非空为 "x,y,w,h"，覆盖 Display
 	Quality  Quality
-	NoAudio  bool
-	Taskbar  bool   // 采集区域包含任务栏（Windows；默认排除任务栏，即工作区）
-	NoFill   bool   // 不裁切为 16:9（默认裁切铺满电视；region 模式不生效）
+	NoAudio bool
+	Taskbar bool // 采集区域包含任务栏（Windows；默认排除任务栏，即工作区）
+	Fill    bool // 裁切为 16:9 铺满电视（默认不裁切，完整画面，电视端可能有细黑边；region 模式不生效）
 	Encoder  string // h264 编码器名（ProbeEncoder 结果）
 	AudioDev string // dshow 音频设备（如 audio=virtual-audio-capturer），空 = 无音频
 }
@@ -131,9 +131,10 @@ func BuildArgs(ff string, opts Options) ([]string, error) {
 					return nil, err
 				}
 			}
-			// 裁切为 16:9（居中截取较长的一边），电视端铺满无黑边：
-			// 源比 16:9 宽（如 21:9）→ 裁宽度；源比 16:9 窄（如 16:10、4:3）→ 裁高度
-			if !opts.NoFill {
+			// -fill 时裁切为 16:9（居中截取较长的一边），电视端铺满无黑边：
+			// 源比 16:9 宽（如 21:9）→ 裁宽度；源比 16:9 窄（如 16:10、4:3）→ 裁高度。
+			// 默认不裁切：完整画面（实测电视对非标准分辨率流会 overscan 裁边）
+			if opts.Fill {
 				if w*9 > h*16 {
 					cropW := h * 16 / 9
 					x += (w - cropW) / 2
